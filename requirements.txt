@@ -1,0 +1,4 @@
+# langchain_codebase
+pandas
+ipywidgets
+tiktoken
