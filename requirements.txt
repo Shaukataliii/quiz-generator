@@ -2,3 +2,6 @@
 pandas
 ipywidgets
 tiktoken
+PyPDF2
+pdf2image
+pytesseract

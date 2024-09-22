@@ -2,6 +2,10 @@ from langchain_codebase.codebase import *
 import pandas as pd
 from langchain_ollama import OllamaLLM
 from langchain.prompts import PromptTemplate
+from langchain_core.documents import Document
+from pdf2image import convert_from_path
+import pytesseract
+import re
 
 
 QUIZ_GENERATOR_PROMPT = """
@@ -17,11 +21,10 @@ Note: Strictly follow the rules and don't provide anything else than the asked. 
 
 contents: {book_content}
 """
+PARAMS_FILEPATH = r'src\params.yaml'
 
 class DocumentProcessor:
-    UNIT_WORD = "Unit "
-    EXTRA_CHARS_TO_EXTRACT_AROUND_UNIT_WORD = 20
-    UNIT_VAL_ENDING_VALS = [":", "\n"]
+    UNIT_REGEX = r'Unit\s+(\d+)'
 
     def extract_details_from_docs_as_df(self, docs, subject, book_class):
         book_data = {
@@ -51,68 +54,13 @@ class DocumentProcessor:
         unit_no = self.extract_unit_no_from_content(page_content)
         return (page_no, unit_no, page_content)
 
-    def extract_unit_no_from_content(self, content: str):
-        chunk = self.extract_chunk_containing_unit_value(content)
-
-        unit_val_start_index = self.extract_unit_val_start_index(chunk)
-        unit_val_end_index = self.extract_unit_val_end_index(chunk)    
-
-        unit_val = chunk[unit_val_start_index:unit_val_end_index]
-        return unit_val
-
-    def extract_chunk_containing_unit_value(self, content: str):
-        unit_word_index_in_content = content.find(self.UNIT_WORD)
-
-        if self.is_found_invalid_index(unit_word_index_in_content):
+    def extract_unit_no_from_content(self, page_content: str):
+        """Using regex and returns Unit no. numerical_value is found else "". """
+        match = re.search(self.UNIT_REGEX, page_content)
+        if match:
+            return match.group(1)
+        else:
             return ""
-        
-        chunk_start_index = self.get_chunk_start_index(unit_word_index_in_content)
-        chunk_end_index = self.get_chunk_end_index(unit_word_index_in_content)
-
-        chunk = content[chunk_start_index:chunk_end_index]
-        return chunk
-
-    def get_chunk_start_index(self, unit_word_index):
-        if self.required_extra_chars_available_before_unit_word_index(unit_word_index):
-            chunk_start_index = unit_word_index - self.EXTRA_CHARS_TO_EXTRACT_AROUND_UNIT_WORD
-        else:
-            chunk_start_index = unit_word_index
-        return chunk_start_index
-
-    def required_extra_chars_available_before_unit_word_index(self, unit_word_index):
-        if unit_word_index > self.EXTRA_CHARS_TO_EXTRACT_AROUND_UNIT_WORD:
-            return True
-        else:
-            return False
-
-    def get_chunk_end_index(self, unit_word_index):
-        unit_word_end_index = unit_word_index + len(self.UNIT_WORD)
-        chunk_end_index = unit_word_end_index + self.EXTRA_CHARS_TO_EXTRACT_AROUND_UNIT_WORD
-        
-        # catch: if required extra chars are not available after unit_word_end_index then while extracting chunk from the content, by default the chunk will end when the content will end. No matter if chunk_end_index is greater than the length of the content.
-        return chunk_end_index
-
-
-    def extract_unit_val_start_index(self, chunk: str):
-        unit_word_index_in_chunk = chunk.find(self.UNIT_WORD)
-        unit_val_start_index = unit_word_index_in_chunk + len(self.UNIT_WORD)
-        return unit_val_start_index
-
-
-    def extract_unit_val_end_index(self, chunk: str):
-        for val in self.UNIT_VAL_ENDING_VALS:
-            if val in chunk:
-                unit_val_end_index = chunk.find(val)
-                return unit_val_end_index
-            else:
-                pass
-        
-        unit_val_end_index = len(chunk)
-        return unit_val_end_index
-
-
-    def is_found_invalid_index(self, index):
-        return True if (index == -1) else False
     
 
     def check_for_missing_unit_and_content_vals(self, df: pd.DataFrame):
@@ -122,9 +70,10 @@ class DocumentProcessor:
         pages_with_no_content = 0
 
         for _, row in df.iterrows():
-            unit_no = row['unit_no']
+            unit_no = row['unit_no'].strip()
             content = row['content']
             if not unit_no.isnumeric():
+                print(f"Unit no: {unit_no} is not valid.")
                 pages_with_no_unit_info += 1
             if not content:
                 pages_with_no_content += 1
@@ -143,27 +92,76 @@ class DocumentProcessor:
 class BookProcessor:
     csv_dirname = "books_df_csvs"
 
-    def process_book_pdf_and_save_df(self, book_pdf_path, contain_images: bool = False):
-        book_pdffile_name = self.extract_book_pdffile_name_from_path(book_pdf_path)
-        subject, book_class = self.extract_subject_and_class_from_book_pdffile_name(book_pdffile_name)
-        df = self.extract_details_from_book_pdf_path_as_df(book_pdf_path, subject, book_class, contain_images)
-        self.save_book_df(df, book_pdffile_name)
+    def process_book_pdf_and_save_df(self, book_pdf_path: str, contain_images: bool = False):
+        """Extracts book_pdf_name, subject and book_class from the provided path. Uses them to process extracts details as DataFrame and saves them using book_pdf_name."""
+        self.set_book_path_detail_vars(book_pdf_path)
+        df = self.extract_details_from_book_pdf_path_as_df(contain_images)
+        self.save_book_df(df, self.book_file_name)
+    
+    def extract_details_from_book_pdf_path_as_df(self, contain_images: bool = False):
+        if is_valid_pdf_path(self.book_pdf_path):
+            docs = load_single_pdf(self.book_pdf_path, contain_images)
+            df = DOC_PROCESSOR.extract_details_from_docs_as_df(docs, self.subject, self.book_class)
+            return df
 
 
-    def extract_book_pdffile_name_from_path(self, book_pdf_path):
-        book_pdffile_name = os.path.basename(book_pdf_path)
-        return book_pdffile_name
+    def use_ocr_to_process_book_pdf_and_save_df(self, book_pdf_path: str):
+        """Uses OCR to process the pdf.
+        Extracts book_pdf_name, subject and book_class from the provided path. Uses them to process extracts details as DataFrame and saves them using book_pdf_name."""
+        self.set_book_path_detail_vars(book_pdf_path)
+        df = self.use_ocr_to_extract_details_from_book_pdf_path_as_df()
+        self.save_book_df(df)
+
+    def use_ocr_to_extract_details_from_book_pdf_path_as_df(self):
+        if is_valid_pdf_path(self.book_pdf_path):
+            docs = OCR_USER.convert_pdf_path_to_docs(self.book_pdf_path, self.book_pdf_name)
+            df = DOC_PROCESSOR.extract_details_from_docs_as_df(docs, self.subject, self.book_class)
+            return df
+        
+    
+    def set_book_path_detail_vars(self, book_pdf_path: str):
+        self.book_pdf_path = book_pdf_path
+        self.book_pdf_name, self.subject, self.book_class = BOOK_PATH_PROCESSOR.extract_filename_subject_class_from_book_pdffile_path(book_pdf_path)
+        self.book_name = (self.subject + " " + self.book_class)
 
 
-    def extract_subject_and_class_from_book_pdffile_name(self, book_name):
-        """Book pdffile name is supposed to be like: 'Physics 9', so it separates using space and return the values. The class name should be isnumeric."""
+    def save_book_df(self, df: pd.DataFrame):
+        if not self.csv_files_dir_exist():
+            os.makedirs(self.csv_dirname, exist_ok=True)
+
+        book_save_path = os.path.join(self.csv_dirname, self.book_name + ".csv")
+        df.to_csv(book_save_path, index=False)
+        print(f"Book saved as: {book_save_path}")
+        
+    def csv_files_dir_exist(self):
+        if os.path.exists(self.csv_dirname):
+            return True
+        else:
+            return False
+
+
+class BookPathProcessor:
+    def extract_filename_subject_class_from_book_pdffile_path(self, book_pdf_path: str):
+        self.book_pdf_path = book_pdf_path
+
+        self.book_pdf_name = self.extract_book_pdffile_name_from_path()
+        subject, book_class = self.extract_subject_and_class_from_book_pdffile_name()
+        return self.book_pdf_name, subject, book_class
+
+    def extract_book_pdffile_name_from_path(self):
+        book_pdf_name = os.path.basename(self.book_pdf_path)
+        return book_pdf_name
+
+    def extract_subject_and_class_from_book_pdffile_name(self):
+        """Book pdffile name is supposed to be like: 'Physics 9.pdf', so it separates using space and return the values. The class name should be isnumeric."""
+        book_name = self.book_pdf_name.rsplit(".", 1)[0]
         if not ' ' in book_name:
             raise Exception(f"Book name doesn't contain any space. It is: {book_name}")
         
         if not self.name_ends_with_numeric_char(book_name):
             raise Exception(f"Book name doesn't class i.e. it doesn't end with a numeric character.")
         
-        subject, book_class = book_name.split(" ")
+        subject, book_class = book_name.rsplit(" ", 1)
         return (subject, book_class)
     
     def name_ends_with_numeric_char(self, name: str):
@@ -171,27 +169,73 @@ class BookProcessor:
         return True if end_char.isnumeric() else False
 
 
-    def extract_details_from_book_pdf_path_as_df(self, book_pdf_path, subject: str, book_class: str, contain_images: bool = False):
-        if is_valid_pdf_path(book_pdf_path):
-            docs = load_single_pdf(book_pdf_path, contain_images)
-            df = DOC_PROCESSOR.extract_details_from_docs_as_df(docs, subject, book_class)
-            return df
+
+class OCRUser:
+    def __init__(self):
+        params = load_yaml_file(PARAMS_FILEPATH)
+        self.poppler_path = params['poppler_path']
+
+    def convert_pdf_path_to_docs(self, book_pdf_path: str, book_pdf_name: str):
+        self.book_pdf_path = book_pdf_path
+        self.book_pdf_name = book_pdf_name
+
+        pages = self.convert_pdf_path_to_images()
+        docs = self.convert_pdf_images_to_docs(pages)
+        return docs
+
+    def convert_pdf_path_to_images(self):
+        images = convert_from_path(pdf_path = self.book_pdf_path, poppler_path = self.poppler_path)
+        return images
 
 
-    def save_book_df(self, df, book_name):
-        if not self.csv_files_dir_exist():
-            os.makedirs(self.csv_dirname, exist_ok=True)
+    def convert_pdf_images_to_docs(self, pdf_images):
+        docs = []
+        for image_no, image in enumerate(pdf_images):
+            image_no = (image_no + 1)
+            image_doc = self.convert_pdf_image_to_doc(image, image_no)
+            docs.append(image_doc)
+        return docs
 
-        book_save_path = os.path.join(self.csv_dirname, book_name + ".csv")
-        df.to_csv(book_save_path, index=False)
-        print(f"Book saved as: {book_save_path}")
+    def convert_pdf_image_to_doc(self, pdf_image: str, image_no: int):
+        text = pytesseract.image_to_string(pdf_image)
+        doc = Document(page_content=text)
+        doc.metadata['page'] = image_no
+        doc.metadata['source'] = self.book_pdf_name
+        return doc
 
-        
-    def csv_files_dir_exist(self):
-        if os.path.exists(self.csv_dirname):
-            return True
+
+
+
+class InputsHandler:
+    def take_evaluate_inputs_to_process_single_book(self):
+        """Takes pdf_path, contain_images, use_ocr input parameters, evalutes them and on successful evaluation.
+        returns (pdf_path: str, contain_images: bool, use_ocr: bool)."""
+        self.pdf_path = input("Enter book pdf file path: ")
+        if is_valid_pdf_path(self.pdf_path):
+            return self.take_other_inputs_and_process_them()
+
+    def take_other_inputs_and_process_them(self):
+        contain_images = input("Extract details from images (yes/no): ")
+        use_ocr = input("Use OCR? (yes/no) ")
+        sure = input("Are you sure? (yes/no) ")
+
+        sure = self.evaluate_convert_val_to_bool(sure)
+        use_ocr = self.evaluate_convert_val_to_bool(use_ocr)
+        contain_images = self.evaluate_convert_val_to_bool(contain_images)
+
+        if sure:
+            return (self.pdf_path, contain_images, use_ocr)
         else:
-            return False
+            return self.handle_pdfpath_input()
+
+    def evaluate_convert_val_to_bool(self, value: str):
+        """The value can only be yes or no. Transforms to True if yes else False."""
+        if value not in ['yes', 'no']:
+            raise Exception(f"Invalid Value. Expected yes or no. Got: {value}")
+        
+        value = (value == 'yes')
+        return value
+
 
 
 
@@ -211,3 +255,5 @@ class Utils:
 
 
 DOC_PROCESSOR = DocumentProcessor()
+OCR_USER = OCRUser()
+BOOK_PATH_PROCESSOR = BookPathProcessor()
