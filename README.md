@@ -15,8 +15,6 @@
 
 # To Do
 - Add other class books
-- Design algorithm to process content optimally while generating quiz.
-- Develop evaluation system
-- Develop results saving system
-- Design UI
 - Update code
+- Add caching functionality.
+- Improve questions generation strategy based on difficulty.

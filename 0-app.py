@@ -1,88 +1,77 @@
 import streamlit as st
+from src.module import QuizGenerator, InputsHandler, QuizProcessor
 
-# Sample MCQ data
-response = [
-    {
-        'question': 'What is the relationship between force, inertia, and momentum?',
-        'choices': ['Force causes a body to change its direction of motion.',
-                    "Inertia opposes any changes in a body's state of rest or uniform motion.",
-                    'Force and inertia are independent concepts.',
-                    'Momentum is directly proportional to the force applied.'],
-        'correct_choice': 1
-    },
-    {
-        'question': "What does Newton's law of motion say about an object's motion?",
-        'choices': ['An object at rest will stay at rest unless a force acts upon it.',
-                    'An object in motion will always continue in that motion unless acted upon by a force.',
-                    'The net force acting on an object is equal to its mass multiplied by its acceleration.',
-                    'Both (a) and (c)'],
-        'correct_choice': 3
-    },
-    {
-        'question': 'What happens when you push down on a balloon?',
-        'choices': ['The balloon expands due to the pressure of the air trapped inside.',
-                    'The balloon shrinks because of the force of your hand pushing it.',
-                    'The balloon stays the same size as there is no external force acting on it.',
-                    'The balloon changes shape based on its inertia.'],
-        'correct_choice': 1
-    },
-    {
-        'question': "What is inertia and how does it relate to an object's movement?",
-        'choices': ['Inertia is the tendency of an object to resist a change in its velocity.',
-                    'Inertia is the force that keeps an object at rest.',
-                    'Inertia is the ability to move without external help.',
-                    'Inertia is the resistance of an object to acceleration.'],
-        'correct_choice': 0
-    },
-    {
-        'question': 'Why does a coin remain stationary when you pull the paper strip away?',
-        'choices': ["The coin's inertia prevents it from moving.",
-                    'The paper strip is heavier than the coin, so it moves first and then the coin follows.',
-                    'The string tension stops the coin from moving.',
-                    'The force of the hand pulling on the paper strip makes the coin move.'],
-        'correct_choice': 0
-    }
-]
 
-st.title("MCQ Quiz")
+st.set_page_config("Quiz-Taker", page_icon="🎓")
+DETAILS_DF_PATH = "classes_data_details.csv"
+INPUTS_HANDLER = InputsHandler(DETAILS_DF_PATH)
+SUPPORTED_CLASSES = INPUTS_HANDLER.get_supported_classes_list()
+DIFFICULTY_LEVELS = ["Basic", "Intermediate", "Advance"]
 
-# To collect user answers
-user_answers = []
 
-# Display each question and its choices
-for index, mcq in enumerate(response):
-    q_no = index + 1
-    st.write(f"Q{q_no}: {mcq['question']}")
+# front-end
+st.header("Quiz Taker 🎓")
+
+col1, col2, col3, col4 = st.columns(4)
+with col1:
+    selected_class = st.selectbox("Class", options=SUPPORTED_CLASSES, index=0)
+    selected_difficulty = st.selectbox("Difficulty", options=DIFFICULTY_LEVELS)
     
-    # Display radio buttons for each question
-    st.radio(f"Select your answer for Question {q_no}:",
-                mcq['choices'], key=f"q_{q_no}", index=None)
+with col2:
+    selected_subject = st.selectbox("Subject", options=INPUTS_HANDLER.get_selected_class_subjects(selected_class), index=0)
+    num_questions = st.number_input("No. of Questions", value=5)
     
+with col3:
+    chapter_name = st.text_input("Chapter name")
+    num_pages = st.number_input("Pages to use.", value=3)
 
-# Submit button
-if st.button("Submit"):
+with col4:
+    topic = st.text_input("Topic")
 
-    correct_count = 0
-    wrong_details = []
+generate_quiz_btn = st.button("Generate Quiz", type="primary", use_container_width=True)
+
+
+# inputs handling backend
+if generate_quiz_btn:
+    if not topic:
+        st.error("Please provide topic.")
+        st.stop()
     
-    # Evaluate the user's answers
-    try:
-        for q_original_idx, mcq in enumerate(response):
+    with st.spinner("Generating.."):
+        QUIZ_GENERATOR = QuizGenerator(selected_class, selected_subject, chapter_name, num_questions, selected_difficulty, topic, num_pages)
+        quiz = QUIZ_GENERATOR.generate_quiz()
+        
+        # Store the quiz in session state
+        st.session_state['quiz'] = quiz
+        st.session_state['quiz_generated'] = True
 
-            q_displayed_idx = q_original_idx + 1
-            q_correct_idx = mcq['correct_choice']
-            selected_answer = st.session_state[f"q_{q_displayed_idx}"]
-            selected_answer_idx = mcq['choices'].index(selected_answer)
+# Check if quiz is already generated
+if st.session_state.get('quiz_generated'):
+    QUIZ_PROCESSOR = QuizProcessor(st.session_state['quiz'])
+    quiz = QUIZ_PROCESSOR.get_formatted_quiz()
 
-            if selected_answer_idx == q_correct_idx:
-                correct_count += 1
-            else:
-                wrong_details.append(f"Q{q_displayed_idx}: {q_correct_idx + 1}")
+    # Display the quiz
+    for question, radio_details in quiz:
+        st.write(question)
+        
+        # Store answers in session state
+        if radio_details['key'] not in st.session_state:
+            st.session_state[radio_details['key']] = None
 
-        # Display the result
-        st.write(f"You got {correct_count} out of {len(response)} correct!")
-        st.write(f"Correct choices: \n {wrong_details}")
+        st.radio(
+            label=radio_details['label'],
+            options=radio_details['options'],
+            key=radio_details['key']
+        )
+    submit_btn = st.button("Submit", type="primary")
 
-    except ValueError:
-        st.error("Please answer all questions.")
-    
+    # evaluating performance
+    if submit_btn:
+        if not QUIZ_PROCESSOR.all_questions_answered(st.session_state):
+            st.error("Please answer all questions.")
+        else:
+            correct_count, wrong_details = QUIZ_PROCESSOR.evaluate_student_performance(st.session_state)
+            
+            # Display the result
+            st.write(f"You got {correct_count} out of {num_questions}!")
+            st.write(f"Correct choices: \n {wrong_details}")
