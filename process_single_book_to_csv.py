@@ -23,7 +23,7 @@ def process_pdf_to_df(pdf_path: str, contain_images: bool, use_ocr: bool):
         BOOK_PROCESSOR.process_book_pdf_and_save_df(pdf_path, contain_images)
 
 
+BOOK_PROCESSOR = BookProcessor()
 if __name__ == "__main__":
-    BOOK_PROCESSOR = BookProcessor()
     INPUTS_HANDLER = InputsHandler("classes_data_details.csv")
     main()
