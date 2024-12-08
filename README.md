@@ -1,4 +1,4 @@
-### README for Quiz Generator Project  
+### Quiz Generator
 
 # **AI-Powered Quiz Generator**  
 Effortlessly generate quizzes, evaluate student performance, and enhance learning experiences using advanced AI techniques like Retrieval-Augmented Generation (RAG) and Large Language Models (LLMs).  
